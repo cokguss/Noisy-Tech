@@ -1,233 +1,280 @@
-import { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Star, TrendingUp, TrendingDown, LogOut, LayoutDashboard, Settings, User, X, Menu, Bell, ChevronRight, Activity, Wallet, ArrowRightLeft, Shield, Clock } from 'lucide-react';
-import { Coin, getCoins } from '@/services/api';
-import { Button } from '@/components/ui/button';
+import { Search, Star, RefreshCw, TrendingUp, TrendingDown, LogOut, Menu, X, Calculator, Plus, Wallet, ChevronsUpDown, Trash2, Globe, Shield, Megaphone } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { getCoins, Coin } from '@/services/api';
 import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Layout } from '@/components/layout';
-import { AddPortfolioModal, PortfolioItem } from '@/components/AddPortfolioModal';
 import { CryptoConverter } from '@/components/CryptoConverter';
 import { NewsFeed } from '@/components/NewsFeed';
+import { AddPortfolioModal, PortfolioItem } from '@/components/AddPortfolioModal';
 import { WelcomeToast } from '@/components/WelcomeToast';
 import { AdminPanel } from '@/components/AdminPanel';
-import { TransactionHistory, Transaction } from '@/components/TransactionHistory';
+import { PortfolioAnalytics } from '@/components/PortfolioAnalytics';
+import { TransactionHistory } from '@/components/TransactionHistory';
+import { SparklineChart } from '@/components/SparklineChart';
+import { cn } from '@/lib/utils';
 import { useLanguage } from '@/context/LanguageContext';
 import { logActivity } from '@/lib/activity';
-import { cn } from '@/lib/utils';
-import { Sparklines, SparklinesLine, SparklinesSpots } from 'react-sparklines';
+import { Skeleton } from '@/components/ui/skeleton';
 
-// Helper component for sparklines
-const SparklineChart = ({ data, isPositive }: { data: number[], isPositive: boolean }) => {
-  if (!data || data.length === 0) return null;
-  
-  // Sample data to reduce points for smoother rendering
-  const sampledData = data.filter((_, i) => i % Math.ceil(data.length / 20) === 0);
-  const color = isPositive ? "#10b981" : "#f43f5e";
-  
-  return (
-    <div className="w-full h-12">
-      <Sparklines data={sampledData} margin={2}>
-        <SparklinesLine style={{ strokeWidth: 2, stroke: color, fill: "none" }} />
-        <SparklinesSpots size={2} style={{ stroke: color, strokeWidth: 2, fill: "white" }} />
-      </Sparklines>
-    </div>
-  );
-};
+import { db } from '@/services/db';
+
+type SortKey = 'market_cap_rank' | 'name' | 'current_price' | 'price_change_percentage_24h' | 'market_cap';
+type SortOrder = 'asc' | 'desc';
 
 export default function Dashboard() {
-  const navigate = useNavigate();
-  const { t, language, setLanguage } = useLanguage();
   const [coins, setCoins] = useState<Coin[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [favorites, setFavorites] = useState<string[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'favorites' | 'portfolio'>('all');
-  const [isPortfolioModalOpen, setIsPortfolioModalOpen] = useState(false);
-  const [user, setUser] = useState<{ username: string; name: string; role?: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [selectedCoin, setSelectedCoin] = useState<Coin | null>(null);
   const [showConverter, setShowConverter] = useState(false);
-  const [showMobileMenu, setShowMobileMenu] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'admin'>('dashboard');
-  const [showBroadcast, setShowBroadcast] = useState(true);
+  const [isPortfolioModalOpen, setIsPortfolioModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'market' | 'admin'>('market');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'favorites'>('all');
+  const [broadcastMessage, setBroadcastMessage] = useState<string | null>(null);
+  
+  const [sortKey, setSortKey] = useState<SortKey>('market_cap_rank');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+
+  const navigate = useNavigate();
+  const { t, language, setLanguage } = useLanguage();
+
+  // Load favorites and portfolio from local storage / db
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const username = user.username || 'guest';
+    
+    const loadUserData = async () => {
+      const userFavorites = await db.getFavorites(username);
+      setFavorites(userFavorites);
+      
+      const userPortfolio = await db.getPortfolio(username);
+      setPortfolio(userPortfolio);
+    };
+    
+    loadUserData();
+
+    const currentBroadcast = localStorage.getItem('broadcast_message');
+    setBroadcastMessage(currentBroadcast);
+
+    const handleStorageChange = () => {
+      setBroadcastMessage(localStorage.getItem('broadcast_message'));
+    };
+    window.addEventListener('storage', handleStorageChange);
+    
+    // Heartbeat for online status
+    const heartbeat = setInterval(() => {
+      if (username !== 'guest') {
+        localStorage.setItem(`last_active_${username}`, Date.now().toString());
+        window.dispatchEvent(new Event('storage'));
+      }
+    }, 30000); // Every 30 seconds
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(heartbeat);
+    };
+  }, []);
+
+  // Fetch data
+  const fetchData = async () => {
+    setLoading(true);
+    const data = await getCoins();
+    setCoins(data);
+    setLastUpdated(new Date());
+    setLoading(false);
+  };
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('user');
-    if (!storedUser) {
-      navigate('/login');
-      return;
-    }
-    
-    const parsedUser = JSON.parse(storedUser);
-    setUser(parsedUser);
-    
-    const storedFavorites = localStorage.getItem(`favorites_${parsedUser.username}`);
-    if (storedFavorites) {
-      setFavorites(JSON.parse(storedFavorites));
-    }
+    fetchData();
+    const interval = setInterval(fetchData, 60000); // Auto-refresh every 60s
+    return () => clearInterval(interval);
+  }, []);
 
-    const storedPortfolio = localStorage.getItem(`portfolio_${parsedUser.username}`);
-    if (storedPortfolio) {
-      setPortfolio(JSON.parse(storedPortfolio));
-    }
+  // Filter and Sort logic
+  const filteredAndSortedCoins = useMemo(() => {
+    const lowerSearch = search.toLowerCase();
+    let result = coins.filter(
+      (coin) =>
+        (coin.name.toLowerCase().includes(lowerSearch) ||
+        coin.symbol.toLowerCase().includes(lowerSearch)) &&
+        (activeFilter === 'all' || favorites.includes(coin.id))
+    );
 
-    const storedTransactions = localStorage.getItem(`transactions_${parsedUser.username}`);
-    if (storedTransactions) {
-      setTransactions(JSON.parse(storedTransactions));
-    }
-
-    const fetchCoins = async () => {
-      setLoading(true);
-      const data = await getCoins();
-      setCoins(data);
-      setLoading(false);
-    };
-
-    fetchCoins();
-
-    // Listen for storage changes (for transactions)
-    const handleStorageChange = () => {
-      const updatedTransactions = localStorage.getItem(`transactions_${parsedUser.username}`);
-      if (updatedTransactions) {
-        setTransactions(JSON.parse(updatedTransactions));
+    result.sort((a, b) => {
+      const valA = a[sortKey];
+      const valB = b[sortKey];
+      
+      if (typeof valA === 'string' && typeof valB === 'string') {
+        return sortOrder === 'asc' 
+          ? valA.localeCompare(valB) 
+          : valB.localeCompare(valA);
       }
       
-      const updatedPortfolio = localStorage.getItem(`portfolio_${parsedUser.username}`);
-      if (updatedPortfolio) {
-        setPortfolio(JSON.parse(updatedPortfolio));
-      }
-    };
+      return sortOrder === 'asc' 
+        ? (valA as number) - (valB as number) 
+        : (valB as number) - (valA as number);
+    });
 
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
-  }, [navigate]);
+    return result;
+  }, [search, coins, sortKey, sortOrder, activeFilter, favorites]);
 
-  const handleLogout = () => {
-    if (user) {
-      logActivity(user.username, user.name, 'activity_logout');
-    }
-    localStorage.removeItem('user');
-    navigate('/login');
-  };
-
-  const toggleFavorite = (e: React.MouseEvent, coinId: string) => {
-    e.stopPropagation();
-    let newFavorites;
-    if (favorites.includes(coinId)) {
-      newFavorites = favorites.filter(id => id !== coinId);
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
-      newFavorites = [...favorites, coinId];
-    }
-    setFavorites(newFavorites);
-    if (user) {
-      localStorage.setItem(`favorites_${user.username}`, JSON.stringify(newFavorites));
+      setSortKey(key);
+      setSortOrder('desc'); // Default to desc for most metrics
     }
   };
 
-  const handleSavePortfolio = (coinId: string, amount: number) => {
+  const SortIcon = ({ k }: { k: SortKey }) => (
+    <ChevronsUpDown className={cn(
+      "h-3 w-3 ml-1 transition-colors",
+      sortKey === k ? "text-emerald-400" : "text-slate-600 group-hover/th:text-slate-400"
+    )} />
+  );
+
+  // Toggle favorite
+  const toggleFavorite = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const username = user.username || 'guest';
+    
+    const isCurrentlyFavorite = favorites.includes(id);
+    const newFavorites = isCurrentlyFavorite
+      ? favorites.filter((fav) => fav !== id)
+      : [...favorites, id];
+      
+    setFavorites(newFavorites);
+    await db.toggleFavorite(username, id, !isCurrentlyFavorite);
+  };
+
+  const handleSavePortfolio = async (id: string, amount: number) => {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const username = user.username || 'guest';
+    const name = user.name || 'User';
+    
     let newPortfolio = [...portfolio];
-    const existingIndex = newPortfolio.findIndex(p => p.id === coinId);
+    const existingIndex = newPortfolio.findIndex(p => p.id === id);
     const existingAmount = existingIndex >= 0 ? newPortfolio[existingIndex].amount : 0;
     
-    const coin = coins.find(c => c.id === coinId);
+    const coin = coins.find(c => c.id === id);
     const currentPrice = coin ? coin.current_price : 0;
     
-    // Record transaction
     const diff = amount - existingAmount;
-    if (diff !== 0 && user) {
-      const newTransaction: Transaction = {
+    
+    if (diff !== 0) {
+      await db.saveTransaction(username, {
         id: Date.now().toString(),
-        coinId: coinId,
+        coinId: id,
         type: diff > 0 ? 'buy' : 'sell',
         amount: Math.abs(diff),
         price: currentPrice,
         date: new Date().toISOString()
-      };
-      
-      const updatedTransactions = [newTransaction, ...transactions];
-      setTransactions(updatedTransactions);
-      localStorage.setItem(`transactions_${user.username}`, JSON.stringify(updatedTransactions));
+      });
+      // Dispatch storage event to update other components
+      window.dispatchEvent(new Event('storage'));
     }
     
     if (amount === 0) {
-      newPortfolio = portfolio.filter(p => p.id !== coinId);
+      if (existingIndex >= 0) {
+        newPortfolio.splice(existingIndex, 1);
+        logActivity(username, name, 'activity_remove_asset', id);
+      }
     } else {
       if (existingIndex >= 0) {
-        newPortfolio = portfolio.map(p => p.id === coinId ? { ...p, amount } : p);
+        newPortfolio[existingIndex].amount = amount;
       } else {
-        newPortfolio = [...portfolio, { id: coinId, amount }];
+        newPortfolio.push({ id, amount });
+        logActivity(username, name, 'activity_add_asset', id);
       }
     }
     
     setPortfolio(newPortfolio);
-    if (user) {
-      localStorage.setItem(`portfolio_${user.username}`, JSON.stringify(newPortfolio));
-    }
+    await db.savePortfolioItem(username, id, amount);
   };
+
+  const handleDeleteAsset = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const username = user.username || 'guest';
+    const name = user.name || 'User';
+    
+    const existingItem = portfolio.find(p => p.id === id);
+    if (existingItem) {
+      const coin = coins.find(c => c.id === id);
+      const currentPrice = coin ? coin.current_price : 0;
+      
+      await db.saveTransaction(username, {
+        id: Date.now().toString(),
+        coinId: id,
+        type: 'sell',
+        amount: existingItem.amount,
+        price: currentPrice,
+        date: new Date().toISOString()
+      });
+      window.dispatchEvent(new Event('storage'));
+    }
+    
+    const newPortfolio = portfolio.filter(p => p.id !== id);
+    setPortfolio(newPortfolio);
+    await db.savePortfolioItem(username, id, 0);
+    logActivity(username, name, 'activity_remove_asset', id);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('user');
+    sessionStorage.removeItem('hasShownWelcomeToast');
+    navigate('/login');
+  };
+
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const isAdmin = user.username === 'noisy';
 
   const handleCoinClick = (coin: Coin) => {
     navigate(`/coin/${coin.id}`, { state: { coin } });
   };
 
-  const filteredAndSortedCoins = useMemo(() => {
-    let result = coins;
-
-    if (search) {
-      result = result.filter(coin => 
-        coin.name.toLowerCase().includes(search.toLowerCase()) || 
-        coin.symbol.toLowerCase().includes(search.toLowerCase())
-      );
-    }
-
-    if (activeFilter === 'favorites') {
-      result = result.filter(coin => favorites.includes(coin.id));
-    } else if (activeFilter === 'portfolio') {
-      result = result.filter(coin => portfolio.some(p => p.id === coin.id));
-    }
-
-    return result;
-  }, [coins, search, activeFilter, favorites, portfolio]);
-
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: value < 1 ? 6 : 2,
     }).format(value);
   };
 
-  const portfolioTotal = useMemo(() => {
-    return portfolio.reduce((total, item) => {
-      const coin = coins.find(c => c.id === item.id);
-      if (coin) {
-        return total + (coin.current_price * item.amount);
-      }
-      return total;
-    }, 0);
-  }, [portfolio, coins]);
+  // Portfolio Calculations
+  const { totalValue, total24hChange, total24hChangePct } = useMemo(() => {
+    let value = 0;
+    let change = 0;
 
-  const portfolioChange24h = useMemo(() => {
-    if (portfolioTotal === 0) return 0;
-    
-    let previousTotal = 0;
     portfolio.forEach(item => {
       const coin = coins.find(c => c.id === item.id);
       if (coin) {
-        // Calculate price 24h ago
-        const previousPrice = coin.current_price / (1 + (coin.price_change_percentage_24h / 100));
-        previousTotal += previousPrice * item.amount;
+        const itemValue = coin.current_price * item.amount;
+        value += itemValue;
+        
+        // Calculate what the value was 24h ago
+        const valueYesterday = itemValue / (1 + coin.price_change_percentage_24h / 100);
+        change += (itemValue - valueYesterday);
       }
     });
-    
-    return ((portfolioTotal - previousTotal) / previousTotal) * 100;
-  }, [portfolio, coins, portfolioTotal]);
 
-  if (!user) return null;
+    const pct = value === 0 ? 0 : (change / (value - change)) * 100;
 
-  const isAdmin = user.role === 'admin';
+    return {
+      totalValue: value,
+      total24hChange: change,
+      total24hChangePct: pct
+    };
+  }, [portfolio, coins]);
 
   return (
     <motion.div
@@ -242,504 +289,514 @@ export default function Dashboard() {
       
       {/* Broadcast Banner */}
       <AnimatePresence>
-        {showBroadcast && (
+        {broadcastMessage && (
           <motion.div 
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             className="bg-gradient-to-r from-emerald-500/20 via-cyan-500/20 to-emerald-500/20 border-b border-emerald-500/20 overflow-hidden"
           >
-            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="bg-emerald-500/20 p-1.5 rounded-full">
-                  <Bell className="h-4 w-4 text-emerald-400" />
-                </div>
-                <p className="text-sm font-medium text-emerald-100">
-                  {language === 'id' 
-                    ? 'Selamat datang di Noisy Tech! Nikmati pengalaman pelacakan kripto terbaik.' 
-                    : 'Welcome to Noisy Tech! Enjoy the best crypto tracking experience.'}
-                </p>
+            <div className="container mx-auto px-4 py-3 flex items-center justify-center gap-3">
+              <div className="flex items-center justify-center h-6 w-6 rounded-full bg-emerald-500/20 animate-pulse">
+                <Megaphone className="h-3 w-3 text-emerald-400" />
               </div>
-              <button 
-                onClick={() => setShowBroadcast(false)}
-                className="text-emerald-400/60 hover:text-emerald-400 transition-colors p-1"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <p className="text-xs sm:text-sm font-medium text-emerald-400 tracking-wide text-center">
+                {broadcastMessage}
+              </p>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Top Navigation Bar */}
-      <header className="sticky top-0 z-40 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-white/5">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-8">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                <TrendingUp className="h-5 w-5 text-white" />
-              </div>
-              <span className="text-xl font-display font-bold text-white tracking-tight hidden sm:block">
-                Noisy Tech
-              </span>
+      {/* Navbar */}
+      <nav className="sticky top-0 z-50 border-b border-white/5 bg-[#050505]/80 backdrop-blur-md">
+        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400/20 to-cyan-500/20 border border-emerald-500/20">
+              <TrendingUp className="h-4 w-4 text-emerald-400" />
             </div>
-            
-            {/* Desktop Navigation */}
-            <nav className="hidden md:flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/5">
-              <button
-                onClick={() => setActiveTab('dashboard')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2",
-                  activeTab === 'dashboard' 
-                    ? "bg-white/10 text-white shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                )}
-              >
-                <LayoutDashboard className="h-4 w-4" />
-                {t('dashboard')}
-              </button>
-              <button
-                onClick={() => setActiveTab('transactions')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2",
-                  activeTab === 'transactions' 
-                    ? "bg-white/10 text-white shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                )}
-              >
-                <ArrowRightLeft className="h-4 w-4" />
-                {language === 'id' ? 'Transaksi' : 'Transactions'}
-              </button>
-              {isAdmin && (
-                <button
-                  onClick={() => setActiveTab('admin')}
-                  className={cn(
-                    "px-4 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2",
-                    activeTab === 'admin' 
-                      ? "bg-emerald-500/20 text-emerald-400 shadow-sm" 
-                      : "text-slate-400 hover:text-emerald-400 hover:bg-white/5"
-                  )}
-                >
-                  <Shield className="h-4 w-4" />
-                  Admin
-                </button>
-              )}
-            </nav>
+            <span className="text-xl font-display font-bold tracking-tight hidden sm:block">
+              Noisy Tech
+            </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Desktop Search */}
+          <div className="hidden md:flex items-center flex-1 max-w-md mx-8">
+            <div className="relative w-full group">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 group-focus-within:text-emerald-400 transition-colors" />
+              <Input
+                placeholder={t('search_placeholder')}
+                className="pl-11 h-10 bg-white/5 border-white/10 focus:border-emerald-500/50 rounded-full transition-all font-mono text-sm"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {isAdmin && (
+              <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-full p-1 mr-2">
+                <button
+                  onClick={() => setActiveTab('market')}
+                  className={`px-2 sm:px-3 py-1 rounded-full text-[9px] sm:text-[10px] font-bold transition-all ${
+                    activeTab === 'market' ? 'bg-white text-black' : 'text-slate-500 hover:text-white'
+                  }`}
+                >
+                  {t('market_overview').split(' ')[0]}
+                </button>
+                <button
+                  onClick={() => setActiveTab('admin')}
+                  className={`px-2 sm:px-3 py-1 rounded-full text-[9px] sm:text-[10px] font-bold transition-all ${
+                    activeTab === 'admin' ? 'bg-white text-black' : 'text-slate-500 hover:text-white'
+                  }`}
+                >
+                  {t('admin_panel').split(' ')[0]}
+                </button>
+              </div>
+            )}
             {/* Language Switcher */}
-            <div className="hidden sm:flex items-center gap-1 bg-white/5 border border-white/10 rounded-full p-1 mr-2">
+            <div className="hidden sm:flex items-center gap-1 bg-white/5 border border-white/10 rounded-full p-1 shrink-0">
               <button
                 onClick={() => setLanguage('id')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider transition-all ${
-                  language === 'id' ? 'bg-white text-black' : 'text-slate-400 hover:text-white'
+                className={`px-2.5 py-1 rounded-full text-[10px] font-bold transition-all ${
+                  language === 'id' ? 'bg-white text-black' : 'text-slate-500 hover:text-white'
                 }`}
               >
                 ID
               </button>
               <button
                 onClick={() => setLanguage('en')}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider transition-all ${
-                  language === 'en' ? 'bg-white text-black' : 'text-slate-400 hover:text-white'
+                className={`px-2.5 py-1 rounded-full text-[10px] font-bold transition-all ${
+                  language === 'en' ? 'bg-white text-black' : 'text-slate-500 hover:text-white'
                 }`}
               >
                 EN
               </button>
             </div>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowConverter(!showConverter)}
-              className={cn(
-                "hidden sm:flex border-white/10 transition-colors",
-                showConverter ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "hover:bg-white/5 text-slate-300"
-              )}
-            >
-              <ArrowRightLeft className="h-4 w-4 mr-2" />
-              {t('converter')}
-            </Button>
-            
-            <div className="h-8 w-px bg-white/10 mx-1 hidden sm:block"></div>
-            
-            <div className="hidden sm:flex items-center gap-3 pl-2">
-              <div className="text-right">
-                <div className="text-sm font-medium text-white">{user.name}</div>
-                <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-mono">{user.role || 'User'}</div>
-              </div>
-              <div className="h-10 w-10 rounded-full bg-gradient-to-br from-slate-800 to-slate-900 border border-white/10 flex items-center justify-center">
-                <User className="h-5 w-5 text-slate-400" />
-              </div>
+            <div className="hidden lg:flex items-center gap-2 text-xs text-slate-500 font-mono shrink-0 bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="whitespace-nowrap">{t('live_status')}</span>
             </div>
-
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              onClick={handleLogout}
-              className="text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 ml-1"
-              title={t('logout') || 'Logout'}
-            >
-              <LogOut className="h-5 w-5" />
-            </Button>
-
-            {/* Mobile Menu Toggle */}
             <Button
               variant="ghost"
               size="icon"
-              className="md:hidden text-slate-400"
-              onClick={() => setShowMobileMenu(!showMobileMenu)}
+              onClick={fetchData}
+              className={cn("text-slate-400 hover:text-white rounded-full", loading && "animate-spin text-emerald-400")}
+              title={`${t('last_updated')}: ${lastUpdated.toLocaleTimeString()}`}
             >
-              {showMobileMenu ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowConverter(!showConverter)}
+              className={cn("hidden md:flex rounded-full", showConverter ? "bg-emerald-500/20 text-emerald-400" : "text-slate-400 hover:text-white")}
+              title={t('toggle_converter')}
+            >
+              <Calculator className="h-4 w-4" />
+            </Button>
+            <div className="hidden md:flex items-center gap-3 pl-4 border-l border-white/10">
+              <Button variant="ghost" size="icon" onClick={handleLogout} className="rounded-full hover:bg-rose-500/10 hover:text-rose-400 transition-colors">
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </div>
+            <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
+              {isMobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </Button>
           </div>
         </div>
 
-        {/* Mobile Navigation Menu */}
+        {/* Mobile Menu */}
         <AnimatePresence>
-          {showMobileMenu && (
+          {isMobileMenuOpen && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              className="md:hidden border-t border-white/5 bg-[#0a0a0a]/95 backdrop-blur-xl overflow-hidden"
+              className="md:hidden border-t border-white/5 bg-[#0a0a0a]"
             >
               <div className="p-4 space-y-4">
-                <div className="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/5">
-                  <div className="h-10 w-10 rounded-full bg-gradient-to-br from-slate-800 to-slate-900 border border-white/10 flex items-center justify-center">
-                    <User className="h-5 w-5 text-slate-400" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-white">{user.name}</div>
-                    <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-mono">{user.role || 'User'}</div>
-                  </div>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                  <Input
+                    placeholder={t('search_placeholder')}
+                    className="pl-9 bg-white/5 border-white/10 rounded-xl font-mono text-sm"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
                 </div>
-                
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => { setActiveTab('dashboard'); setShowMobileMenu(false); }}
-                    className={cn(
-                      "p-3 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-2 transition-colors",
-                      activeTab === 'dashboard' ? "bg-white/10 text-white" : "bg-white/5 text-slate-400"
-                    )}
-                  >
-                    <LayoutDashboard className="h-5 w-5" />
-                    {t('dashboard')}
-                  </button>
-                  <button
-                    onClick={() => { setActiveTab('transactions'); setShowMobileMenu(false); }}
-                    className={cn(
-                      "p-3 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-2 transition-colors",
-                      activeTab === 'transactions' ? "bg-white/10 text-white" : "bg-white/5 text-slate-400"
-                    )}
-                  >
-                    <ArrowRightLeft className="h-5 w-5" />
-                    {language === 'id' ? 'Transaksi' : 'Transactions'}
-                  </button>
-                  {isAdmin && (
+                {isAdmin && (
+                  <div className="grid grid-cols-2 gap-2">
                     <button
-                      onClick={() => { setActiveTab('admin'); setShowMobileMenu(false); }}
-                      className={cn(
-                        "p-3 rounded-xl text-sm font-medium flex flex-col items-center justify-center gap-2 transition-colors col-span-2",
-                        activeTab === 'admin' ? "bg-emerald-500/20 text-emerald-400" : "bg-white/5 text-slate-400"
-                      )}
+                      onClick={() => { setActiveTab('market'); setIsMobileMenuOpen(false); }}
+                      className={`flex items-center justify-center gap-2 p-3 rounded-xl border font-bold text-xs transition-all ${
+                        activeTab === 'market' 
+                          ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' 
+                          : 'bg-white/5 border-white/10 text-slate-400'
+                      }`}
                     >
-                      <Shield className="h-5 w-5" />
-                      Admin Panel
+                      <TrendingUp className="h-4 w-4" />
+                      {t('market_overview')}
                     </button>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
-                  <span className="text-sm font-medium text-slate-300">Language</span>
-                  <div className="flex items-center gap-1 bg-black/50 rounded-full p-1">
+                    <button
+                      onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }}
+                      className={`flex items-center justify-center gap-2 p-3 rounded-xl border font-bold text-xs transition-all ${
+                        activeTab === 'admin' 
+                          ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' 
+                          : 'bg-white/5 border-white/10 text-slate-400'
+                      }`}
+                    >
+                      <Shield className="h-4 w-4" />
+                      {t('admin_panel')}
+                    </button>
+                  </div>
+                )}
+                <div className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/5">
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => setLanguage('id')}
-                      className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                        language === 'id' ? 'bg-white text-black' : 'text-slate-400'
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                        language === 'id' ? 'bg-white text-black' : 'text-slate-500'
                       }`}
                     >
                       ID
                     </button>
                     <button
                       onClick={() => setLanguage('en')}
-                      className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                        language === 'en' ? 'bg-white text-black' : 'text-slate-400'
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                        language === 'en' ? 'bg-white text-black' : 'text-slate-500'
                       }`}
                     >
                       EN
                     </button>
                   </div>
+                  <div className="flex gap-2">
+                    <Button variant="ghost" size="icon" onClick={() => setShowConverter(!showConverter)} className={cn(showConverter && "text-emerald-400")}>
+                      <Calculator className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={handleLogout} className="text-rose-400">
+                      <LogOut className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
-
-                <Button
-                  variant="outline"
-                  className="w-full border-white/10"
-                  onClick={() => { setShowConverter(!showConverter); setShowMobileMenu(false); }}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2" />
-                  {t('converter')}
-                </Button>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
-      </header>
+      </nav>
 
-      {/* Main Content Area */}
-      {activeTab === 'admin' && isAdmin ? (
-        <AdminPanel />
-      ) : activeTab === 'transactions' ? (
-        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <TransactionHistory transactions={transactions} coins={coins} />
-        </main>
-      ) : (
-        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Left Column: Portfolio & Market */}
-          <div className="lg:col-span-8 xl:col-span-9 space-y-8">
-            
-            {/* Portfolio Summary Card */}
-            <Card className="relative overflow-hidden border-white/5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] p-8">
-              <div className="absolute top-0 right-0 p-32 bg-emerald-500/5 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
-              <div className="absolute bottom-0 left-0 p-24 bg-cyan-500/5 rounded-full blur-3xl -ml-12 -mb-12 pointer-events-none"></div>
+      {/* Main Content */}
+      <main className="flex-1 container mx-auto px-4 py-8">
+        {isAdmin && activeTab === 'admin' ? (
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-3xl font-display font-bold tracking-tight text-white mb-1">{t('admin_panel')}</h1>
+                <p className="text-slate-400 text-sm">{t('user_management')}</p>
+              </div>
+            </div>
+            <AdminPanel />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Left Column: Market Overview & Portfolio */}
+            <div className="lg:col-span-8 xl:col-span-9 space-y-8">
               
-              <div className="relative z-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
+              {/* Portfolio Summary Card */}
+            <div className="relative rounded-3xl border border-white/10 bg-[#0a0a0a]/80 backdrop-blur-md overflow-hidden shadow-2xl p-6 sm:p-8">
+              <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+                <Wallet className="w-48 h-48 text-emerald-400 transform rotate-12" />
+              </div>
+              <div className="relative z-10 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
                 <div>
-                  <div className="flex items-center gap-2 text-slate-400 mb-2">
-                    <Wallet className="h-4 w-4" />
-                    <span className="text-sm font-medium uppercase tracking-wider">{t('total_balance')}</span>
+                  <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <Wallet className="w-4 h-4" /> {t('total_balance')}
+                  </h2>
+                  <div className="text-4xl sm:text-5xl font-mono font-bold text-white tracking-tight mb-2">
+                    {formatCurrency(totalValue)}
                   </div>
-                  <div className="text-4xl md:text-5xl font-display font-bold text-white tracking-tight mb-3">
-                    {formatCurrency(portfolioTotal)}
-                  </div>
-                  
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "inline-flex items-center px-2.5 py-1 rounded-full text-sm font-medium",
-                      portfolioChange24h >= 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"
-                    )}>
-                      {portfolioChange24h >= 0 ? <TrendingUp className="h-3.5 w-3.5 mr-1.5" /> : <TrendingDown className="h-3.5 w-3.5 mr-1.5" />}
-                      {Math.abs(portfolioChange24h).toFixed(2)}%
-                    </div>
-                    <span className="text-sm text-slate-500 font-medium">vs last 24h</span>
+                  <div className={cn(
+                    "inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-mono font-medium",
+                    total24hChange >= 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"
+                  )}>
+                    {total24hChange >= 0 ? <TrendingUp className="h-4 w-4 mr-2" /> : <TrendingDown className="h-4 w-4 mr-2" />}
+                    {total24hChange >= 0 ? '+' : ''}{formatCurrency(total24hChange)} ({Math.abs(total24hChangePct).toFixed(2)}%)
                   </div>
                 </div>
-                
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
                   <Button 
                     onClick={() => setIsPortfolioModalOpen(true)}
-                    className="bg-white text-black hover:bg-slate-200 shadow-xl shadow-white/5 transition-all"
+                    className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl shadow-lg shadow-emerald-500/20 font-medium"
                   >
-                    {t('manage_portfolio')}
+                    <Plus className="w-4 h-4 mr-2" /> {t('add_asset')}
                   </Button>
                 </div>
               </div>
-            </Card>
 
-            {/* Market Section */}
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <h2 className="text-2xl font-display font-bold text-white flex items-center gap-2">
-                  <Activity className="h-6 w-6 text-emerald-400" />
-                  {t('market_overview')}
-                </h2>
-                
-                <div className="flex items-center gap-2 overflow-x-auto pb-2 sm:pb-0 hide-scrollbar">
-                  <div className="flex bg-white/5 p-1 rounded-xl border border-white/5">
-                    <button
-                      onClick={() => setActiveFilter('all')}
-                      className={cn(
-                        "px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap",
-                        activeFilter === 'all' 
-                          ? "bg-white/10 text-white shadow-sm" 
-                          : "text-slate-400 hover:text-white"
-                      )}
-                    >
-                      {t('all_assets')}
-                    </button>
-                    <button
-                      onClick={() => setActiveFilter('favorites')}
-                      className={cn(
-                        "px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center gap-1.5",
-                        activeFilter === 'favorites' 
-                          ? "bg-white/10 text-white shadow-sm" 
-                          : "text-slate-400 hover:text-white"
-                      )}
-                    >
-                      <Star className={cn("h-3.5 w-3.5", activeFilter === 'favorites' ? "fill-yellow-500 text-yellow-500" : "")} />
-                      {t('favorites')}
-                    </button>
-                    <button
-                      onClick={() => setActiveFilter('portfolio')}
-                      className={cn(
-                        "px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center gap-1.5",
-                        activeFilter === 'portfolio' 
-                          ? "bg-white/10 text-white shadow-sm" 
-                          : "text-slate-400 hover:text-white"
-                      )}
-                    >
-                      <Wallet className="h-3.5 w-3.5" />
-                      {t('portfolio')}
-                    </button>
+              {/* Portfolio Analytics */}
+              {portfolio.length > 0 && (
+                <div className="mt-8 pt-6 border-t border-white/5">
+                  <PortfolioAnalytics portfolio={portfolio} coins={coins} />
+                </div>
+              )}
+
+              {/* Portfolio Mini List - Only show when viewing all coins */}
+              {portfolio.length > 0 && activeFilter === 'all' && (
+                <div className="mt-8 pt-6 border-t border-white/5">
+                  <h3 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-4">{t('your_assets')}</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {portfolio.map(item => {
+                      const coin = coins.find(c => c.id === item.id);
+                      if (!coin) return null;
+                      const value = coin.current_price * item.amount;
+                      return (
+                        <div 
+                          key={item.id} 
+                          className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-colors cursor-pointer group"
+                          onClick={() => handleCoinClick(coin)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <img src={coin.image} alt={coin.name} className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
+                            <div>
+                              <div className="font-medium text-white text-sm">{coin.symbol.toUpperCase()}</div>
+                              <div className="text-xs text-slate-500 font-mono">{item.amount}</div>
+                            </div>
+                          </div>
+                          <div className="text-right flex items-center gap-3">
+                            <div>
+                              <div className="font-mono font-medium text-white text-sm">{formatCurrency(value)}</div>
+                              <div className={cn(
+                                "text-xs font-mono",
+                                coin.price_change_percentage_24h >= 0 ? "text-emerald-400" : "text-rose-400"
+                              )}>
+                                {coin.price_change_percentage_24h >= 0 ? '+' : ''}{coin.price_change_percentage_24h.toFixed(2)}%
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => handleDeleteAsset(e, item.id)}
+                              className="p-2 rounded-lg bg-rose-500/10 text-rose-500 opacity-0 group-hover:opacity-100 transition-all hover:bg-rose-500 hover:text-white"
+                              title={t('remove_asset')}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
+                </div>
+              )}
+
+              {/* Transaction History */}
+              {portfolio.length > 0 && activeFilter === 'all' && (
+                <div className="mt-8 pt-6 border-t border-white/5">
+                  <TransactionHistory coins={coins} />
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-6 flex items-center justify-between">
+                <div>
+                  <h1 className="text-2xl font-display font-bold tracking-tight mb-1">{t('market_overview')}</h1>
+                  <p className="text-slate-400 text-sm">{t('market_overview_subtitle')}</p>
+                </div>
+                
+                <div className="flex items-center gap-2 bg-white/5 border border-white/5 p-1 rounded-xl">
+                  <button
+                    onClick={() => setActiveFilter('all')}
+                    className={cn(
+                      "px-4 py-1.5 rounded-lg text-xs font-medium transition-all",
+                      activeFilter === 'all' ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-white"
+                    )}
+                  >
+                    {t('filter_all')}
+                  </button>
+                  <button
+                    onClick={() => setActiveFilter('favorites')}
+                    className={cn(
+                      "px-4 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2",
+                      activeFilter === 'favorites' ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-white"
+                    )}
+                  >
+                    <Star className={cn("h-3 w-3", activeFilter === 'favorites' ? "fill-black" : "fill-transparent")} />
+                    {t('filter_favorites')}
+                  </button>
                 </div>
               </div>
 
-              <div className="relative group">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500 group-focus-within:text-emerald-400 transition-colors" />
-                <Input
-                  type="text"
-                  placeholder={t('search_placeholder') || "Search coins..."}
-                  className="pl-12 h-14 bg-[#0a0a0a]/50 backdrop-blur-xl border-white/10 focus:border-emerald-500/50 focus:ring-emerald-500/20 rounded-2xl text-lg transition-all"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </div>
-
-              {/* Desktop Table View */}
-              <div className="hidden md:block overflow-hidden rounded-2xl border border-white/5 bg-[#0a0a0a]/50 backdrop-blur-xl">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-white/5 bg-white/[0.02]">
-                        <th className="p-4 font-medium text-slate-400 text-sm w-12 text-center">#</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm">{t('asset')}</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm text-right">{t('price')}</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm text-right">{t('change_24h')}</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm text-right hidden lg:table-cell">{t('market_cap')}</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm text-right hidden xl:table-cell">{t('volume_24h')}</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm w-32 hidden lg:table-cell text-center">Last 7 Days</th>
-                        <th className="p-4 font-medium text-slate-400 text-sm w-16 text-center"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {loading ? (
-                        [...Array(5)].map((_, i) => (
-                          <tr key={i} className="animate-pulse">
-                            <td className="p-4"><div className="h-4 w-4 bg-white/5 rounded mx-auto"></div></td>
-                            <td className="p-4">
-                              <div className="flex items-center gap-3">
-                                <div className="h-8 w-8 bg-white/5 rounded-full"></div>
-                                <div className="space-y-2">
-                                  <div className="h-4 w-20 bg-white/5 rounded"></div>
-                                  <div className="h-3 w-12 bg-white/5 rounded"></div>
-                                </div>
+              {/* Desktop Table */}
+              <div className="hidden md:block rounded-2xl border border-white/5 bg-[#0a0a0a]/50 backdrop-blur-md overflow-hidden shadow-2xl">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-[#111] text-slate-400 font-medium text-xs uppercase tracking-wider">
+                    <tr>
+                      <th 
+                        className="p-4 w-12 font-medium cursor-pointer group/th"
+                        onClick={() => handleSort('market_cap_rank')}
+                      >
+                        <div className="flex items-center"># <SortIcon k="market_cap_rank" /></div>
+                      </th>
+                      <th 
+                        className="p-4 font-medium cursor-pointer group/th"
+                        onClick={() => handleSort('name')}
+                      >
+                        <div className="flex items-center">{t('asset')} <SortIcon k="name" /></div>
+                      </th>
+                      <th 
+                        className="p-4 text-right font-medium cursor-pointer group/th"
+                        onClick={() => handleSort('current_price')}
+                      >
+                        <div className="flex items-center justify-end">{t('price')} <SortIcon k="current_price" /></div>
+                      </th>
+                      <th 
+                        className="p-4 text-right font-medium cursor-pointer group/th"
+                        onClick={() => handleSort('price_change_percentage_24h')}
+                      >
+                        <div className="flex items-center justify-end">{t('change_24h')} <SortIcon k="price_change_percentage_24h" /></div>
+                      </th>
+                      <th className="p-4 text-center font-medium">{t('trend_7d')}</th>
+                      <th 
+                        className="p-4 text-right font-medium cursor-pointer group/th"
+                        onClick={() => handleSort('market_cap')}
+                      >
+                        <div className="flex items-center justify-end">{t('market_cap')} <SortIcon k="market_cap" /></div>
+                      </th>
+                      <th className="p-4 text-center font-medium">{t('action')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {loading ? (
+                      Array.from({ length: 10 }).map((_, i) => (
+                        <tr key={i} className="animate-pulse">
+                          <td className="p-4"><Skeleton className="h-4 w-8 bg-white/5" /></td>
+                          <td className="p-4">
+                            <div className="flex items-center gap-3">
+                              <Skeleton className="h-8 w-8 rounded-full bg-white/5" />
+                              <div className="space-y-1">
+                                <Skeleton className="h-4 w-24 bg-white/5" />
+                                <Skeleton className="h-3 w-12 bg-white/5" />
                               </div>
-                            </td>
-                            <td className="p-4"><div className="h-4 w-24 bg-white/5 rounded ml-auto"></div></td>
-                            <td className="p-4"><div className="h-4 w-16 bg-white/5 rounded ml-auto"></div></td>
-                            <td className="p-4 hidden lg:table-cell"><div className="h-4 w-24 bg-white/5 rounded ml-auto"></div></td>
-                            <td className="p-4 hidden xl:table-cell"><div className="h-4 w-24 bg-white/5 rounded ml-auto"></div></td>
-                            <td className="p-4 hidden lg:table-cell"><div className="h-8 w-24 bg-white/5 rounded mx-auto"></div></td>
-                            <td className="p-4"><div className="h-6 w-6 bg-white/5 rounded mx-auto"></div></td>
-                          </tr>
-                        ))
-                      ) : (
-                        filteredAndSortedCoins.map((coin, index) => (
-                          <motion.tr
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.2, delay: index * 0.02 }}
-                            key={coin.id}
-                            onClick={() => handleCoinClick(coin)}
-                            className="hover:bg-white/[0.02] transition-colors group cursor-pointer"
-                          >
-                            <td className="p-4 text-slate-500 text-sm text-center font-mono">
-                              {coin.market_cap_rank}
-                            </td>
-                            <td className="p-4">
-                              <div className="flex items-center gap-3">
-                                <img src={coin.image} alt={coin.name} className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
-                                <div>
-                                  <div className="font-medium text-white group-hover:text-emerald-400 transition-colors">{coin.name}</div>
-                                  <div className="text-xs text-slate-500 uppercase font-mono">{coin.symbol}</div>
-                                </div>
+                            </div>
+                          </td>
+                          <td className="p-4 text-right"><Skeleton className="h-4 w-20 ml-auto bg-white/5" /></td>
+                          <td className="p-4 text-right"><Skeleton className="h-6 w-16 ml-auto rounded-md bg-white/5" /></td>
+                          <td className="p-4"><Skeleton className="h-8 w-24 mx-auto bg-white/5" /></td>
+                          <td className="p-4 text-right"><Skeleton className="h-4 w-24 ml-auto bg-white/5" /></td>
+                          <td className="p-4 text-center"><Skeleton className="h-8 w-8 mx-auto rounded-lg bg-white/5" /></td>
+                        </tr>
+                      ))
+                    ) : (
+                      filteredAndSortedCoins.slice(0, 50).map((coin) => (
+                        <tr
+                          key={coin.id}
+                          onClick={() => handleCoinClick(coin)}
+                          className="hover:bg-white/[0.02] transition-colors group cursor-pointer"
+                        >
+                          <td className="p-4 text-slate-500 font-mono text-xs">{coin.market_cap_rank}</td>
+                          <td className="p-4">
+                            <div className="flex items-center gap-3">
+                              <img src={coin.image} alt={coin.name} className="h-8 w-8 rounded-full" referrerPolicy="no-referrer" />
+                              <div>
+                                <div className="font-medium text-white">{coin.name}</div>
+                                <div className="text-xs text-slate-500 uppercase font-mono">{coin.symbol}</div>
                               </div>
-                            </td>
-                            <td className="p-4 text-right font-mono font-medium text-white">
-                              {formatCurrency(coin.current_price)}
-                            </td>
-                            <td className="p-4 text-right">
-                              <div className={cn(
-                                "inline-flex items-center px-2 py-1 rounded-md text-sm font-mono font-medium",
-                                coin.price_change_percentage_24h >= 0 
-                                  ? "bg-emerald-500/10 text-emerald-400" 
-                                  : "bg-rose-500/10 text-rose-400"
-                              )}>
-                                {coin.price_change_percentage_24h >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
-                                {Math.abs(coin.price_change_percentage_24h).toFixed(2)}%
-                              </div>
-                            </td>
-                            <td className="p-4 text-right text-slate-300 font-mono text-sm hidden lg:table-cell">
-                              {formatCurrency(coin.market_cap)}
-                            </td>
-                            <td className="p-4 text-right text-slate-300 font-mono text-sm hidden xl:table-cell">
-                              {formatCurrency(coin.total_volume)}
-                            </td>
-                            <td className="p-4 hidden lg:table-cell">
+                            </div>
+                          </td>
+                          <td className="p-4 text-right font-mono text-white">
+                            {formatCurrency(coin.current_price)}
+                          </td>
+                          <td className="p-4 text-right">
+                            <div className={cn(
+                              "inline-flex items-center px-2 py-1 rounded-md text-xs font-mono font-medium",
+                              coin.price_change_percentage_24h >= 0 
+                                ? "bg-emerald-500/10 text-emerald-400" 
+                                : "bg-rose-500/10 text-rose-400"
+                            )}>
+                              {coin.price_change_percentage_24h >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
+                              {Math.abs(coin.price_change_percentage_24h).toFixed(2)}%
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex justify-center">
                               {coin.sparkline_in_7d && (
                                 <SparklineChart 
                                   data={coin.sparkline_in_7d.price} 
                                   isPositive={coin.price_change_percentage_24h >= 0} 
                                 />
                               )}
-                            </td>
-                            <td className="p-4 text-center">
-                              <button
-                                onClick={(e) => toggleFavorite(e, coin.id)}
-                                className="p-2 rounded-lg hover:bg-white/10 transition-colors"
-                              >
-                                <Star
-                                  className={cn(
-                                    "h-5 w-5 transition-colors",
-                                    favorites.includes(coin.id) ? "fill-yellow-400 text-yellow-400" : "text-slate-600 group-hover:text-slate-400"
-                                  )}
-                                />
-                              </button>
-                            </td>
-                          </motion.tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                            </div>
+                          </td>
+                          <td className="p-4 text-right text-slate-400 font-mono text-xs">
+                            {formatCurrency(coin.market_cap)}
+                          </td>
+                          <td className="p-4 text-center">
+                            <button
+                              onClick={(e) => toggleFavorite(e, coin.id)}
+                              className="p-2 rounded-lg hover:bg-white/10 transition-colors"
+                            >
+                              <Star
+                                 className={cn(
+                                  "h-4 w-4 transition-colors",
+                                  favorites.includes(coin.id) ? "fill-yellow-400 text-yellow-400" : "text-slate-600 group-hover:text-slate-400"
+                                )}
+                              />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
 
-              {/* Mobile Card View */}
-              <div className="md:hidden space-y-4">
+              {/* Mobile Cards */}
+              <div className="md:hidden grid gap-4">
                 {loading ? (
-                  [...Array(5)].map((_, i) => (
-                    <Card key={i} className="p-4 border-white/5 bg-[#0a0a0a]/50">
-                      <div className="animate-pulse flex items-center justify-between">
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <Card key={i} className="p-4 border-white/5 bg-[#0a0a0a]/50 backdrop-blur-md">
+                      <div className="flex items-start justify-between mb-4">
                         <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 bg-white/5 rounded-full"></div>
+                          <Skeleton className="h-10 w-10 rounded-full bg-white/5" />
                           <div className="space-y-2">
-                            <div className="h-4 w-20 bg-white/5 rounded"></div>
-                            <div className="h-3 w-12 bg-white/5 rounded"></div>
+                            <Skeleton className="h-4 w-32 bg-white/5" />
+                            <Skeleton className="h-3 w-16 bg-white/5" />
                           </div>
                         </div>
-                        <div className="space-y-2 text-right">
-                          <div className="h-4 w-24 bg-white/5 rounded ml-auto"></div>
-                          <div className="h-4 w-16 bg-white/5 rounded ml-auto"></div>
+                        <Skeleton className="h-8 w-8 rounded-lg bg-white/5" />
+                      </div>
+                      <div className="flex items-end justify-between">
+                        <div className="space-y-2">
+                          <Skeleton className="h-3 w-12 bg-white/5" />
+                          <Skeleton className="h-6 w-24 bg-white/5" />
                         </div>
+                        <div className="space-y-2 flex flex-col items-end">
+                          <Skeleton className="h-3 w-16 bg-white/5" />
+                          <Skeleton className="h-5 w-20 rounded-md bg-white/5" />
+                        </div>
+                      </div>
+                      <div className="mt-4 h-12 w-full bg-white/5 rounded-xl p-2">
+                         <Skeleton className="h-full w-full bg-white/5" />
+                      </div>
+                      <div className="pt-4 mt-4 border-t border-white/5 flex justify-between">
+                        <Skeleton className="h-3 w-20 bg-white/5" />
+                        <Skeleton className="h-3 w-24 bg-white/5" />
                       </div>
                     </Card>
                   ))
                 ) : (
-                  filteredAndSortedCoins.map((coin, index) => (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.2, delay: index * 0.02 }}
-                      key={coin.id}
-                    >
+                  filteredAndSortedCoins.slice(0, 50).map((coin) => (
                     <Card
-                      className="p-4 cursor-pointer border-white/5 bg-[#0a0a0a]/50 backdrop-blur-xl"
+                      key={coin.id}
+                      className="p-4 cursor-pointer border-white/5 bg-[#0a0a0a]/50 backdrop-blur-md"
                       onClick={() => handleCoinClick(coin)}
                     >
-                      <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-start justify-between mb-4">
                         <div className="flex items-center gap-3">
-                          <img src={coin.image} alt={coin.name} className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
+                          <img src={coin.image} alt={coin.name} className="h-10 w-10 rounded-full" referrerPolicy="no-referrer" />
                           <div>
                             <div className="font-bold text-white">{coin.name}</div>
                             <div className="text-xs text-slate-500 uppercase font-mono">{coin.symbol}</div>
@@ -789,7 +846,6 @@ export default function Dashboard() {
                         <span>MCap: {(coin.market_cap / 1e9).toFixed(2)}B</span>
                       </div>
                     </Card>
-                    </motion.div>
                   ))
                 )}
               </div>
