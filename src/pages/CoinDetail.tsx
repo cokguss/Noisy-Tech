@@ -158,8 +158,15 @@ export default function CoinDetail() {
   const isPositive = coin.price_change_percentage_24h >= 0;
 
   return (
-    <Layout>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <motion.div
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -20 }}
+      transition={{ duration: 0.3 }}
+      className="min-h-screen flex flex-col"
+    >
+      <Layout className="flex-1">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="flex items-center gap-4">
@@ -366,6 +373,7 @@ export default function CoinDetail() {
         onSave={handleSavePortfolio}
         initialCoinId={coin.id}
       />
-    </Layout>
+      </Layout>
+    </motion.div>
   );
 }

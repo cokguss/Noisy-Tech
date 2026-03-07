@@ -277,8 +277,15 @@ export default function Dashboard() {
   }, [portfolio, coins]);
 
   return (
-    <Layout className="flex flex-col">
-      <WelcomeToast userName={user.name || 'User'} isAdmin={isAdmin} />
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.3 }}
+      className="min-h-screen flex flex-col"
+    >
+      <Layout className="flex flex-col flex-1">
+        <WelcomeToast userName={user.name || 'User'} isAdmin={isAdmin} />
       
       {/* Broadcast Banner */}
       <AnimatePresence>
@@ -683,8 +690,11 @@ export default function Dashboard() {
                         </tr>
                       ))
                     ) : (
-                      filteredAndSortedCoins.map((coin) => (
-                        <tr
+                      filteredAndSortedCoins.map((coin, index) => (
+                        <motion.tr
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.2, delay: index * 0.02 }}
                           key={coin.id}
                           onClick={() => handleCoinClick(coin)}
                           className="hover:bg-white/[0.02] transition-colors group cursor-pointer"
@@ -739,7 +749,7 @@ export default function Dashboard() {
                               />
                             </button>
                           </td>
-                        </tr>
+                        </motion.tr>
                       ))
                     )}
                   </tbody>
@@ -781,9 +791,14 @@ export default function Dashboard() {
                     </Card>
                   ))
                 ) : (
-                  filteredAndSortedCoins.map((coin) => (
-                    <Card
+                  filteredAndSortedCoins.map((coin, index) => (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.2, delay: index * 0.02 }}
                       key={coin.id}
+                    >
+                    <Card
                       className="p-4 cursor-pointer border-white/5 bg-[#0a0a0a]/50 backdrop-blur-xl"
                       onClick={() => handleCoinClick(coin)}
                     >
@@ -839,6 +854,7 @@ export default function Dashboard() {
                         <span>MCap: {(coin.market_cap / 1e9).toFixed(2)}B</span>
                       </div>
                     </Card>
+                    </motion.div>
                   ))
                 )}
               </div>
@@ -908,6 +924,7 @@ export default function Dashboard() {
         portfolio={portfolio}
         onSave={handleSavePortfolio}
       />
-    </Layout>
+      </Layout>
+    </motion.div>
   );
 }

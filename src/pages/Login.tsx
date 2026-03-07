@@ -53,9 +53,16 @@ export default function Login() {
   };
 
   return (
-    <Layout className="flex items-center justify-center p-4">
-      {/* Language Switcher */}
-      <div className="absolute top-6 right-6 z-50">
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      transition={{ duration: 0.3 }}
+      className="min-h-screen flex flex-col"
+    >
+      <Layout className="flex items-center justify-center p-4 flex-1">
+        {/* Language Switcher */}
+        <div className="absolute top-6 right-6 z-50">
         <div className="flex items-center gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-full p-1">
           <button
             onClick={() => setLanguage('id')}
@@ -180,6 +187,7 @@ export default function Login() {
           </div>
         </div>
       </motion.div>
-    </Layout>
+      </Layout>
+    </motion.div>
   );
 }
